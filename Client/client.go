@@ -13,10 +13,25 @@ import (
 	"strings"
 )
 
+type CommandType int
+
+const (
+	ClientRequest CommandType = iota
+	CoordinatorResponse
+	CoordinatorRequest
+	CoordinatorPrepare
+	CoordinatorCommit
+	ParticipantResponse
+	ParticipantYes
+	ParticipantAbort
+)
+
 type Packet struct {
-	IsClient bool
-	Id       string
-	Command  string
+	IsClient      bool
+	Id            string
+	TransactionId string
+	CommandType   CommandType
+	Command       string
 }
 
 func ChooseServer(filename string) (net.Conn, error) {
@@ -27,7 +42,7 @@ func ChooseServer(filename string) (net.Conn, error) {
 	lines := strings.Split(string(content), "\n")
 	index := rand.Intn(len(lines))
 	serverInfo := strings.Fields(lines[index])
-	log.Printf("Connected to Branch %s", serverInfo[0])
+	log.Printf("Connecting to Branch %s", serverInfo[0])
 	if len(serverInfo) != 3 {
 		log.Fatal("Invalid config file")
 	}
@@ -51,7 +66,6 @@ func ReadServer(connection net.Conn, output chan Packet) {
 		var packet Packet
 		err := decoder.Decode(&packet)
 		if err != nil {
-			log.Println(err)
 			return
 		}
 		output <- packet
@@ -61,42 +75,52 @@ func ReadServer(connection net.Conn, output chan Packet) {
 func HandlePacket(packet Packet) (bool, string) {
 	if strings.Contains(packet.Command, "ABORTED") {
 		return false, packet.Command
+	} else if packet.Command == "COMMIT OK" {
+		return false, packet.Command
 	}
 	return true, packet.Command
 }
 
 func main() {
+	//rand.Seed(time.Now().UnixNano())
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if len(os.Args) != 3 {
 		log.Fatal("Format should be ./client id configuration")
 	}
 	var connection net.Conn
+	var err error
 	var response string
+	var output chan Packet
+	var input chan Packet
 	id := os.Args[1]
-	output := make(chan Packet, 100)
-	input := make(chan Packet, 100)
-	reader := bufio.NewReader(os.Stdin)
+	scanner := bufio.NewScanner(os.Stdin)
 	inTransaction := false
-	for {
-		command, err := reader.ReadString('\n')
-		command = strings.TrimSuffix(command, "\n")
+	transactionId := ""
+	for scanner.Scan() {
+		command := scanner.Text()
+		command = strings.TrimSpace(command)
 		log.Println(command)
-		if err != nil {
-			log.Fatal(err)
-		}
 		if command == "BEGIN" {
+			if connection != nil {
+				connection.Close()
+			}
 			connection, err = ChooseServer(os.Args[2])
 			if err != nil {
 				log.Println("Unable to connect")
 				continue
 			}
+			input = make(chan Packet, 100)
+			output = make(chan Packet, 100)
 			go WriteServer(connection, input)
 			go ReadServer(connection, output)
 			inTransaction = true
+			transactionId = ""
 		} else if !inTransaction {
 			continue
 		}
-		input <- Packet{true, id, command}
+		input <- Packet{true, id, transactionId, ClientRequest, command}
 		packet := <-output
+		transactionId = packet.TransactionId
 		inTransaction, response = HandlePacket(packet)
 		fmt.Println(response)
 	}
