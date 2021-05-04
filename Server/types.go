@@ -88,6 +88,7 @@ func (m *Map) Contains(id string) bool {
 type TenativeWrite struct {
 	Timestamp string
 	Value     int
+	Committed bool
 }
 
 type Account struct {
@@ -102,7 +103,7 @@ type Account struct {
 
 func (a *Account) Init(id string) {
 	a.Id = id
-	a.Writes = append(a.Writes, &TenativeWrite{"", 0})
+	a.Writes = append(a.Writes, &TenativeWrite{"", 0, true})
 	a.Cond = sync.NewCond(&a.Mutex)
 }
 
@@ -118,7 +119,7 @@ func (a *Account) Write(value int, timestamp string) error {
 				return nil
 			}
 		}
-		a.Writes = append(a.Writes, &TenativeWrite{timestamp, value})
+		a.Writes = append(a.Writes, &TenativeWrite{timestamp, value, false})
 		sort.Slice(a.Writes, func(i, j int) bool {
 			return !TimestampGreater(a.Writes[i].Timestamp, a.Writes[j].Timestamp)
 		})
@@ -130,7 +131,6 @@ func (a *Account) Write(value int, timestamp string) error {
 
 func (a *Account) Read(timestamp string) (int, error) {
 	a.Mutex.Lock()
-	defer a.Mutex.Unlock()
 	if TimestampGreater(timestamp, a.CommitTimestamp) {
 		var tenativeWrite *TenativeWrite
 		committed := false
@@ -138,7 +138,7 @@ func (a *Account) Read(timestamp string) (int, error) {
 			write := a.Writes[i]
 			if TimestampGreaterEqual(timestamp, write.Timestamp) {
 				tenativeWrite = write
-				committed = TimestampGreaterEqual(a.CommitTimestamp, write.Timestamp)
+				committed = write.Committed
 				break
 			}
 		}
@@ -147,17 +147,23 @@ func (a *Account) Read(timestamp string) (int, error) {
 			sort.Slice(a.Writes, func(i, j int) bool {
 				return !TimestampGreater(a.Reads[i], a.Reads[j])
 			})
+			a.Mutex.Unlock()
 			return a.Value, nil
 		} else {
+			log.Println(len(a.Writes), tenativeWrite)
 			if tenativeWrite.Timestamp == timestamp {
+				a.Mutex.Unlock()
 				return tenativeWrite.Value, nil
 			} else {
+				log.Println("WAIT:", timestamp)
 				a.Cond.Wait()
+				log.Println("END WAIT:", timestamp)
 				a.Mutex.Unlock()
 				return a.Read(timestamp)
 			}
 		}
 	} else {
+		a.Mutex.Unlock()
 		return 0, errors.New("Abort")
 	}
 }
@@ -175,7 +181,7 @@ func (a *Account) CanCommit(timestamp string) bool {
 
 func (a *Account) Commit(timestamp string) error {
 	a.Mutex.Lock()
-	defer a.Mutex.Unlock()
+	index := -1
 	for i, write := range a.Writes {
 		if write.Timestamp == timestamp {
 			if i != 1 {
@@ -184,53 +190,66 @@ func (a *Account) Commit(timestamp string) error {
 				return a.Commit(timestamp)
 			} else {
 				if write.Value < 0 {
+					a.Mutex.Unlock()
 					return errors.New("Abort")
 				}
+				log.Println("Broadcast")
+				a.Cond.Broadcast()
 				a.Value = write.Value
+				write.Committed = true
+				index = 1
 			}
 		}
 	}
-	a.Writes = a.Writes[1:]
-	var index int
+	log.Println(len(a.Writes))
+	if index == 1 {
+		a.Writes = a.Writes[1:]
+	}
+	log.Println(len(a.Writes))
+	index = -1
 	for i, read := range a.Reads {
 		if read == timestamp {
 			index = i
 			break
 		}
 	}
-	if index < len(a.Reads)-1 {
+	if index >= 0 && index < len(a.Reads)-1 {
 		a.Reads = append(a.Reads[:index], a.Reads[index+1:]...)
-	} else {
+	} else if index >= 0 {
 		a.Reads = a.Reads[:index]
 	}
 	a.CommitTimestamp = timestamp
+	a.Mutex.Unlock()
 	return nil
 }
 
 func (a *Account) Abort(timestamp string) {
 	a.Mutex.Lock()
 	defer a.Mutex.Unlock()
-	var index int
+	index := -1
 	for i, write := range a.Writes {
 		if write.Timestamp == timestamp {
 			index = i
+			log.Println("Broadcast")
+			a.Cond.Broadcast()
 			break
 		}
 	}
-	if index < len(a.Writes)-1 {
+	if index >= 0 && index < len(a.Writes)-1 {
 		a.Writes = append(a.Writes[:index], a.Writes[index+1:]...)
-	} else {
+	} else if index >= 0 {
 		a.Writes = a.Writes[:index]
 	}
+	index = -1
 	for i, read := range a.Reads {
 		if read == timestamp {
 			index = i
 			break
 		}
 	}
-	if index < len(a.Reads)-1 {
+	if index >= 0 && index < len(a.Reads)-1 {
 		a.Reads = append(a.Reads[:index], a.Reads[index+1:]...)
-	} else {
+	} else if index >= 0 {
 		a.Reads = a.Reads[:index]
 	}
 }

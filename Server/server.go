@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -193,6 +194,7 @@ func HandleCommitFromCoordinator(node *Node, packet Packet) {
 		account := accounts.Get(accountId).(*Account)
 		account.Commit(packet.TransactionId)
 	}
+	PrintBalances()
 }
 
 func HandleYesFromParticipant(node *Node, packet Packet) {
@@ -256,25 +258,48 @@ func SendAbortToParticipants(transactionId string) {
 	}
 }
 
+func PrintBalances() {
+	accounts.RWMutex.RLock()
+	keys := make([]string, len(accounts.Data))
+	i := 0
+	for k := range accounts.Data {
+		keys[i] = k
+		i++
+	}
+	sort.Strings(keys)
+	balanceString := "BALANCES "
+	for _, id := range keys {
+		account := accounts.Data[id].(*Account)
+		account.Mutex.Lock()
+		if account.Value > 0 {
+			balanceString += fmt.Sprintf("%s:%d ", id, account.Value)
+		}
+		account.Mutex.Unlock()
+	}
+	fmt.Println(balanceString)
+	accounts.RWMutex.RUnlock()
+
+}
+
 func HandleServer(node *Node) {
 	for {
 		packet := <-node.Output
 		log.Println(packet.Command)
 		switch packet.CommandType {
 		case CoordinatorRequest:
-			HandleCommandFromCoordinator(node, packet)
+			go HandleCommandFromCoordinator(node, packet)
 		case CoordinatorPrepare:
-			HandlePrepareFromCoordinator(node, packet)
+			go HandlePrepareFromCoordinator(node, packet)
 		case CoordinatorCommit:
-			HandleCommitFromCoordinator(node, packet)
+			go HandleCommitFromCoordinator(node, packet)
 		case CoordinatorAbort:
-			HandleAbortFromCoordinator(node, packet)
+			go HandleAbortFromCoordinator(node, packet)
 		case ParticipantResponse:
-			HandleResponseFromParticipant(node, packet)
+			go HandleResponseFromParticipant(node, packet)
 		case ParticipantYes:
-			HandleYesFromParticipant(node, packet)
+			go HandleYesFromParticipant(node, packet)
 		case ParticipantAbort:
-			HandleAbortFromParticipant(node, packet)
+			go HandleAbortFromParticipant(node, packet)
 		}
 	}
 }
@@ -310,7 +335,6 @@ func HandleClient(node *Node, transactionId string) {
 
 func SendPacketToParticipant(server string, packet Packet) {
 	node := nodes.Get(server).(*Node)
-	log.Println(node.Id, node.IsHost)
 	node.Input <- packet
 }
 
@@ -345,7 +369,6 @@ func Write(node *Node) {
 			err := encoder.Encode(packet)
 			if err != nil {
 				log.Println(err)
-				nodes.Delete(node.Id)
 				return
 			}
 		}
@@ -360,7 +383,6 @@ func Read(node *Node) {
 		log.Printf("Receive:%s %s->%s\n", packet.Command, node.Id, host.Id)
 		if err != nil {
 			log.Println(err)
-			nodes.Delete(node.Id)
 			return
 		}
 		node.Output <- packet

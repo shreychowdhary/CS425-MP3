@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
+	"time"
 
 	"log"
 	"math/rand"
@@ -82,7 +83,7 @@ func HandlePacket(packet Packet) (bool, string) {
 }
 
 func main() {
-	//rand.Seed(time.Now().UnixNano())
+	rand.Seed(time.Now().UnixNano())
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	if len(os.Args) != 3 {
 		log.Fatal("Format should be ./client id configuration")
