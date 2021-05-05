@@ -397,6 +397,7 @@ func Read(node *Node) {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(ioutil.Discard)
 	if len(os.Args) != 3 {
 		log.Fatal("Format should be ./server branch configuration")
 	}

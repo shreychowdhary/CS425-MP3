@@ -85,6 +85,7 @@ func HandlePacket(packet Packet) (bool, string) {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.SetOutput(ioutil.Discard)
 	if len(os.Args) != 3 {
 		log.Fatal("Format should be ./client id configuration")
 	}
