@@ -299,15 +299,6 @@ type Command struct {
 	Value   int
 }
 
-type Transaction struct {
-	Id              string
-	ClientId        string
-	Accounts        map[string]bool
-	CreatedAccounts []string
-	State           TransactionState
-	Responses       map[string]bool
-}
-
 type TransactionState int
 
 const (
@@ -316,3 +307,82 @@ const (
 	Committed
 	Aborted
 )
+
+type Transaction struct {
+	Id              string
+	ClientId        string
+	Accounts        map[string]bool
+	CreatedAccounts []string
+	State           TransactionState
+	Responses       map[string]bool
+	RWMutex         sync.RWMutex
+}
+
+func (t *Transaction) Init(id string, clientId string) {
+	t.RWMutex.Lock()
+	t.Id = id
+	t.ClientId = clientId
+	t.Accounts = make(map[string]bool)
+	t.CreatedAccounts = make([]string, 0)
+	t.State = Open
+	t.Responses = make(map[string]bool)
+	t.RWMutex.Unlock()
+}
+
+func (t *Transaction) GetClientId() string {
+	t.RWMutex.RLock()
+	defer t.RWMutex.RUnlock()
+	return t.ClientId
+}
+
+func (t *Transaction) AddAccount(accountId string) {
+	t.RWMutex.Lock()
+	t.Accounts[accountId] = true
+	t.RWMutex.Unlock()
+}
+
+func (t *Transaction) AddCreatedAccount(accountId string) {
+	t.RWMutex.Lock()
+	t.CreatedAccounts = append(t.CreatedAccounts, accountId)
+	t.RWMutex.Unlock()
+}
+
+func (t *Transaction) NumAccounts() int {
+	t.RWMutex.RLock()
+	defer t.RWMutex.RUnlock()
+	return len(t.Accounts)
+}
+
+func (t *Transaction) GetAccounts() []string {
+	t.RWMutex.RLock()
+	defer t.RWMutex.RUnlock()
+	output := make([]string, 0)
+	for key := range t.Accounts {
+		output = append(output, key)
+	}
+	return output
+}
+
+func (t *Transaction) GetState() TransactionState {
+	t.RWMutex.RLock()
+	defer t.RWMutex.RUnlock()
+	return t.State
+}
+
+func (t *Transaction) SetState(state TransactionState) {
+	t.RWMutex.Lock()
+	t.State = state
+	t.RWMutex.Unlock()
+}
+
+func (t *Transaction) AddResponse(id string) {
+	t.RWMutex.Lock()
+	t.Responses[id] = true
+	t.RWMutex.Unlock()
+}
+
+func (t *Transaction) NumResponses() int {
+	t.RWMutex.RLock()
+	defer t.RWMutex.RUnlock()
+	return len(t.Responses)
+}

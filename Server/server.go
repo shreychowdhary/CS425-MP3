@@ -71,7 +71,8 @@ func ConnectToServer(branch string, ip string, port string) {
 
 func NewTransaction(clientId string) string {
 	transactionId := fmt.Sprintf("%d:%s", time.Now().UnixNano(), host.Id)
-	transaction := Transaction{transactionId, clientId, make(map[string]bool), make([]string, 0), Open, make(map[string]bool)}
+	transaction := Transaction{}
+	transaction.Init(transactionId, clientId)
 	transactions.Set(transactionId, &transaction)
 	return transactionId
 }
@@ -96,20 +97,21 @@ func HandleIncomingConnection(node *Node) {
 func HandleCommandFromCoordinator(node *Node, packet Packet) {
 	command := ParseCommand(packet.Command)
 	if !transactions.Contains(packet.TransactionId) {
-		transaction := Transaction{packet.TransactionId, "", make(map[string]bool), make([]string, 0), Open, make(map[string]bool)}
+		transaction := Transaction{}
+		transaction.Init(packet.TransactionId, "")
 		transactions.Set(packet.TransactionId, &transaction)
 	}
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
 	switch command.Action {
 	case "DEPOSIT":
 		if !accounts.Contains(command.Account) {
-			transaction.CreatedAccounts = append(transaction.CreatedAccounts, command.Account)
+			transaction.AddCreatedAccount(command.Account)
 			account := Account{}
 			account.Init(command.Account)
 			account.Write(0, packet.TransactionId)
 			accounts.Set(command.Account, &account)
 		}
-		transaction.Accounts[command.Account] = true
+		transaction.AddAccount(command.Account)
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
 		if _, ok := err.(*NotFoundError); ok {
@@ -131,7 +133,7 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "NOT FOUND, ABORTED"}
 			return
 		}
-		transaction.Accounts[command.Account] = true
+		transaction.AddAccount(command.Account)
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
 		if _, ok := err.(*NotFoundError); ok {
@@ -147,7 +149,7 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "NOT FOUND, ABORTED"}
 			return
 		}
-		transaction.Accounts[command.Account] = true
+		transaction.AddAccount(command.Account)
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
 		if _, ok := err.(*NotFoundError); ok {
@@ -179,10 +181,10 @@ func HandlePrepareFromCoordinator(node *Node, packet Packet) {
 		return
 	}
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
-	if len(transaction.Accounts) == 0 {
+	if transaction.NumAccounts() == 0 {
 		node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantYes, "YES"}
 	}
-	for accountId := range transaction.Accounts {
+	for _, accountId := range transaction.GetAccounts() {
 		account := accounts.Get(accountId).(*Account)
 		if account.CanCommit(packet.TransactionId) {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantYes, "YES"}
@@ -198,8 +200,8 @@ func HandleCommitFromCoordinator(node *Node, packet Packet) {
 		return
 	}
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
-	transaction.State = Committed
-	for accountId := range transaction.Accounts {
+	transaction.SetState(Committed)
+	for _, accountId := range transaction.GetAccounts() {
 		account := accounts.Get(accountId).(*Account)
 		account.Commit(packet.TransactionId)
 	}
@@ -208,24 +210,23 @@ func HandleCommitFromCoordinator(node *Node, packet Packet) {
 
 func HandleYesFromParticipant(node *Node, packet Packet) {
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
-	if transaction.State != Prepare {
+	if transaction.GetState() != Prepare {
 		return
 	}
-	transaction.Responses[node.Id] = true
-	if len(transaction.Responses) == numServers {
+	transaction.AddResponse(node.Id)
+	if transaction.NumResponses() == numServers {
 		for _, id := range serverIds {
 			node := nodes.Get(id).(*Node)
 			node.Input <- Packet{false, host.Id, packet.TransactionId, CoordinatorCommit, "Commit"}
 		}
-		clientNode := nodes.Get(transaction.ClientId).(*Node)
+		clientNode := nodes.Get(transaction.GetClientId()).(*Node)
 		clientNode.Input <- Packet{false, host.Id, packet.TransactionId, CoordinatorResponse, "COMMIT OK"}
 	}
 }
 
 func HandleAbortFromParticipant(node *Node, packet Packet) {
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
-	log.Println("Transaction.ClientId:", transaction.ClientId, nodes.Contains(transaction.ClientId))
-	clientNode := nodes.Get(transaction.ClientId).(*Node)
+	clientNode := nodes.Get(transaction.GetClientId()).(*Node)
 	clientNode.Input <- Packet{false, host.Id, packet.TransactionId, CoordinatorResponse, packet.Command}
 	SendAbortToParticipants(packet.TransactionId)
 }
@@ -236,25 +237,20 @@ func HandleAbortFromCoordinator(node *Node, packet Packet) {
 		return
 	}
 	transaction := transactions.Get(packet.TransactionId).(*Transaction)
-	if transaction.State == Aborted {
+	if transaction.GetState() == Aborted {
 		return
 	}
-	for accountId := range transaction.Accounts {
+	for _, accountId := range transaction.GetAccounts() {
 		log.Println("Aborting:", accountId)
 		account := accounts.Get(accountId).(*Account)
 		account.Abort(packet.TransactionId)
 	}
-	/*for _, accountId := range transaction.CreatedAccounts {
-		//Check all tenative writes to see if you can delete
-		log.Println("Deleting:", accountId)
-		accounts.Delete(accountId)
-	}*/
 	transaction.State = Aborted
 }
 
 func SendPrepareToParticipants(transactionId string) {
 	transaction := transactions.Get(transactionId).(*Transaction)
-	transaction.State = Prepare
+	transaction.SetState(Prepare)
 	for _, id := range serverIds {
 		node := nodes.Get(id).(*Node)
 		node.Input <- Packet{false, host.Id, transactionId, CoordinatorPrepare, "Prepare"}
@@ -391,7 +387,6 @@ func Read(node *Node) {
 	for {
 		var packet Packet
 		err := decoder.Decode(&packet)
-		log.Printf("Receive:%s %s->%s\n", packet.Command, node.Id, host.Id)
 		if err != nil {
 			log.Println(err)
 			return
