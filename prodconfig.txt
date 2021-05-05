@@ -1,0 +1,5 @@
+A sp21-cs425-g06-01.cs.illinois.edu 1234
+B sp21-cs425-g06-02.cs.illinois.edu 1234
+C sp21-cs425-g06-03.cs.illinois.edu 1234
+D sp21-cs425-g06-04.cs.illinois.edu 1234
+E sp21-cs425-g06-05.cs.illinois.edu 1234
