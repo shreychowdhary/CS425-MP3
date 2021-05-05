@@ -106,13 +106,15 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 			transaction.CreatedAccounts = append(transaction.CreatedAccounts, command.Account)
 			account := Account{}
 			account.Init(command.Account)
+			account.Write(0, packet.TransactionId)
 			accounts.Set(command.Account, &account)
 		}
 		transaction.Accounts[command.Account] = true
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
-		log.Println("Initial Value:", value, err)
-		if err != nil {
+		if _, ok := err.(*NotFoundError); ok {
+			account.Write(0, packet.TransactionId)
+		} else if err != nil {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "ABORTED"}
 			return
 		}
@@ -121,7 +123,8 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "ABORTED"}
 			return
 		}
-		log.Println("DEPOSIT SUCCESSFUL")
+		log.Println("Final Value:", value)
+		accounts.Set(command.Account, account)
 		node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantResponse, "OK"}
 	case "BALANCE":
 		if !accounts.Contains(command.Account) {
@@ -131,7 +134,10 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 		transaction.Accounts[command.Account] = true
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
-		if err != nil {
+		if _, ok := err.(*NotFoundError); ok {
+			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "NOT FOUND, ABORTED"}
+			return
+		} else if err != nil {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "ABORTED"}
 			return
 		}
@@ -144,7 +150,10 @@ func HandleCommandFromCoordinator(node *Node, packet Packet) {
 		transaction.Accounts[command.Account] = true
 		account := accounts.Get(command.Account).(*Account)
 		value, err := account.Read(packet.TransactionId)
-		if err != nil {
+		if _, ok := err.(*NotFoundError); ok {
+			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "NOT FOUND, ABORTED"}
+			return
+		} else if err != nil {
 			node.Input <- Packet{false, host.Id, packet.TransactionId, ParticipantAbort, "ABORTED"}
 			return
 		}
@@ -235,10 +244,11 @@ func HandleAbortFromCoordinator(node *Node, packet Packet) {
 		account := accounts.Get(accountId).(*Account)
 		account.Abort(packet.TransactionId)
 	}
-	for _, accountId := range transaction.CreatedAccounts {
+	/*for _, accountId := range transaction.CreatedAccounts {
+		//Check all tenative writes to see if you can delete
 		log.Println("Deleting:", accountId)
 		accounts.Delete(accountId)
-	}
+	}*/
 	transaction.State = Aborted
 }
 
@@ -327,8 +337,9 @@ func HandleClient(node *Node, transactionId string) {
 			SendPrepareToParticipants(transactionId)
 		case "ABORT":
 			SendAbortToParticipants(transactionId)
+			node.Input <- Packet{false, host.Id, transactionId, CoordinatorResponse, "ABORTED"}
 		default:
-			log.Println("error:", command.Action)
+			node.Input <- Packet{false, host.Id, transactionId, CoordinatorResponse, "INVALID COMMAND"}
 		}
 	}
 }

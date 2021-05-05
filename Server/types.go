@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"log"
 	"net"
 	"sort"
@@ -85,6 +84,20 @@ func (m *Map) Contains(id string) bool {
 	return ok
 }
 
+type NotFoundError struct {
+}
+
+func (e *NotFoundError) Error() string {
+	return "Not Found"
+}
+
+type AbortError struct {
+}
+
+func (e *AbortError) Error() string {
+	return "Abort"
+}
+
 type TenativeWrite struct {
 	Timestamp string
 	Value     int
@@ -103,17 +116,20 @@ type Account struct {
 
 func (a *Account) Init(id string) {
 	a.Id = id
-	a.Writes = append(a.Writes, &TenativeWrite{"", 0, true})
+	a.CommitTimestamp = "0:A"
+	a.Writes = append(a.Writes, &TenativeWrite{"0:A", 0, false})
 	a.Cond = sync.NewCond(&a.Mutex)
 }
 
 func (a *Account) Write(value int, timestamp string) error {
 	a.Mutex.Lock()
 	defer a.Mutex.Unlock()
-	log.Println(timestamp, a.Reads[len(a.Reads)-1], a.CommitTimestamp)
+	if len(a.Reads) > 0 {
+		log.Println(timestamp, a.Reads[len(a.Reads)-1], TimestampGreaterEqual(timestamp, a.Reads[len(a.Reads)-1]))
+	}
 	if (len(a.Reads) == 0 || TimestampGreaterEqual(timestamp, a.Reads[len(a.Reads)-1])) && TimestampGreater(timestamp, a.CommitTimestamp) {
+
 		for _, write := range a.Writes {
-			log.Println(write.Timestamp, timestamp)
 			if write.Timestamp == timestamp {
 				write.Value = value
 				return nil
@@ -123,9 +139,12 @@ func (a *Account) Write(value int, timestamp string) error {
 		sort.Slice(a.Writes, func(i, j int) bool {
 			return !TimestampGreater(a.Writes[i].Timestamp, a.Writes[j].Timestamp)
 		})
+		for _, write := range a.Writes {
+			log.Println(write.Timestamp)
+		}
 		return nil
 	} else {
-		return errors.New("Abort")
+		return &AbortError{}
 	}
 }
 
@@ -142,29 +161,32 @@ func (a *Account) Read(timestamp string) (int, error) {
 				break
 			}
 		}
+		log.Println(tenativeWrite)
 		if committed {
 			a.Reads = append(a.Reads, timestamp)
-			sort.Slice(a.Writes, func(i, j int) bool {
+			sort.Slice(a.Reads, func(i, j int) bool {
 				return !TimestampGreater(a.Reads[i], a.Reads[j])
 			})
+			log.Println(a.Reads)
 			a.Mutex.Unlock()
 			return a.Value, nil
 		} else {
-			log.Println(len(a.Writes), tenativeWrite)
 			if tenativeWrite.Timestamp == timestamp {
 				a.Mutex.Unlock()
 				return tenativeWrite.Value, nil
-			} else {
-				log.Println("WAIT:", timestamp)
-				a.Cond.Wait()
-				log.Println("END WAIT:", timestamp)
+			} else if tenativeWrite.Timestamp == "0:A" {
 				a.Mutex.Unlock()
+				return 0, &NotFoundError{}
+			} else {
+				a.Cond.Wait()
+				a.Mutex.Unlock()
+				log.Println("READ UNLOCK")
 				return a.Read(timestamp)
 			}
 		}
 	} else {
 		a.Mutex.Unlock()
-		return 0, errors.New("Abort")
+		return 0, &AbortError{}
 	}
 }
 
@@ -191,9 +213,8 @@ func (a *Account) Commit(timestamp string) error {
 			} else {
 				if write.Value < 0 {
 					a.Mutex.Unlock()
-					return errors.New("Abort")
+					return &AbortError{}
 				}
-				log.Println("Broadcast")
 				a.Cond.Broadcast()
 				a.Value = write.Value
 				write.Committed = true
@@ -230,7 +251,6 @@ func (a *Account) Abort(timestamp string) {
 	for i, write := range a.Writes {
 		if write.Timestamp == timestamp {
 			index = i
-			log.Println("Broadcast")
 			a.Cond.Broadcast()
 			break
 		}
@@ -259,11 +279,6 @@ func TimestampGreaterEqual(timestamp1 string, timestamp2 string) bool {
 }
 
 func TimestampGreater(timestamp1 string, timestamp2 string) bool {
-	if timestamp2 == "" {
-		return true
-	} else if timestamp1 == "" {
-		return false
-	}
 	timestampInfo1 := strings.Split(timestamp1, ":")
 	timestampInfo2 := strings.Split(timestamp2, ":")
 	physicalTimestamp1, _ := strconv.Atoi(timestampInfo1[0])
